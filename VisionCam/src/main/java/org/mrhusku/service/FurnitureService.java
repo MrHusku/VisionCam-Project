@@ -1,8 +1,6 @@
 package org.mrhusku.service;
 
-import org.mrhusku.model.AiResponse;
-import org.mrhusku.model.Furniture;
-import org.mrhusku.model.Product;
+import org.mrhusku.model.*;
 import org.mrhusku.repository.FurnitureRepository;
 import org.mrhusku.repository.ProductRepository;
 import org.springframework.stereotype.Service;
@@ -99,9 +97,8 @@ public class FurnitureService {
     public byte[] processProfessionalInpainting(MultipartFile roomImage, Long productId, int maskWidthPx, int maskX, int maskY) {
         try {
             Product selectedProduct = productRepository.findById(productId)
-                    .orElseThrow(() -> new RuntimeException("Produsul nu a fost găsit."));
+                    .orElseThrow(() -> new RuntimeException("Produsul nu a fost gasit."));
 
-            // Apelează /analyze automat ca să obții coordonatele reale
             String analyzeUrl = "http://127.0.0.1:8001/analyze?known_width=" + maskWidthPx;
             MultiValueMap<String, Object> analyzeBody = new LinkedMultiValueMap<>();
             analyzeBody.add("file", roomImage.getResource());
@@ -113,21 +110,19 @@ public class FurnitureService {
             ResponseEntity<AiResponse> analyzeResponse = restTemplate.postForEntity(analyzeUrl, analyzeRequest, AiResponse.class);
             AiResponse detected = analyzeResponse.getBody();
 
-            // Folosește coordonatele reale detectate de YOLO
+
             int realX = (detected != null && detected.getX() > 0) ? detected.getX() : maskX;
             int realY = (detected != null && detected.getY() > 0) ? detected.getY() : maskY;
             int realW = (detected != null && detected.getwPx() > 0) ? detected.getwPx() : maskWidthPx;
+            int realH = (detected != null && detected.gethPx() > 0) ? detected.gethPx() : (maskWidthPx * 60);
 
-            // Calculează height-ul pe baza proporțiilor produsului
-            int realHeightCm = selectedProduct.getHeight();
-            int realWidthCm = selectedProduct.getWidth();
-            int realH = (realHeightCm * realW) / realWidthCm;
-
-            //  Trimite la Python cu coordonate corecte
             String forgeProxyUrl = "http://127.0.0.1:8001/generate_pro";
             MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
             body.add("room_file", roomImage.getResource());
             body.add("product_image_url", selectedProduct.getImageUrl());
+
+            body.add("product_category", selectedProduct.getCategory());
+
             body.add("x", realX);
             body.add("y", realY);
             body.add("w_px", realW);
@@ -137,13 +132,77 @@ public class FurnitureService {
             headers.setContentType(MediaType.MULTIPART_FORM_DATA);
 
             HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body, headers);
-            ResponseEntity<byte[]> response = restTemplate.postForEntity(forgeProxyUrl, requestEntity, byte[].class);
 
-            return response.getBody();
+            try {
+                ResponseEntity<byte[]> response = restTemplate.postForEntity(forgeProxyUrl, requestEntity, byte[].class);
+                return response.getBody();
+            } catch (org.springframework.web.client.HttpClientErrorException.BadRequest ex) {
+                String errorDetails = ex.getResponseBodyAsString();
+                System.err.println("Eroare Validare Categorii AI: " + errorDetails);
+                throw new RuntimeException("Incompatibilitate detectata: " + errorDetails);
+            }
 
         } catch (Exception e) {
             e.printStackTrace();
-            throw new RuntimeException("Eroare la generarea profesională: " + e.getMessage());
+            throw new RuntimeException("Eroare la generarea : " + e.getMessage());
         }
+    }
+    public byte[] generareMultipla(MultipartFile originalRoomImage) {
+        try {
+            byte[] currentImageBytes = originalRoomImage.getBytes();
+
+            MultipartFile initialFile = new CustomMultipartFile(currentImageBytes, "file", "image.png");
+            AiAnalysisResponse analysis = restTemplate.postForObject(
+                    "http://127.0.0.1:8001/analyze?known_width=1000",
+                    new HttpEntity<>(createBody(initialFile), createHeaders()),
+                    AiAnalysisResponse.class
+            );
+
+            if (analysis == null || analysis.getItems() == null) return currentImageBytes;
+            for (AiResponse detected : analysis.getItems()) {
+
+                String categorieDetectata = detected.getDetectedItem();
+                Product p = productRepository.findFirstByCategoryOrderByIdAsc(categorieDetectata);
+
+                if (p == null) {
+                    System.out.println("Nu am gasit niciun produs in DB pentru categoria : " + categorieDetectata);
+                    continue;
+                }
+
+                MultipartFile currentStepFile = new CustomMultipartFile(currentImageBytes, "room_file", "image.png");
+                MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+                body.add("room_file", currentStepFile.getResource());
+                body.add("product_image_url", p.getImageUrl());
+                body.add("product_category", p.getCategory());
+                body.add("x", detected.getX());
+                body.add("y", detected.getY());
+                body.add("w_px", detected.getwPx());
+
+                body.add("h_px", detected.gethPx());
+
+                HttpEntity<MultiValueMap<String, Object>> request = new HttpEntity<>(body, createHeaders());
+                ResponseEntity<byte[]> response = restTemplate.postForEntity("http://127.0.0.1:8001/generate_pro", request, byte[].class);
+
+                if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                    currentImageBytes = response.getBody();
+                }
+            }
+            return currentImageBytes;
+
+        } catch (Exception e) {
+            throw new RuntimeException("Eroare la procesarea automata: " + e.getMessage());
+        }
+    }
+
+    private HttpHeaders createHeaders() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        return headers;
+    }
+
+    private MultiValueMap<String, Object> createBody(MultipartFile file) {
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        body.add("file", file.getResource());
+        return body;
     }
 }

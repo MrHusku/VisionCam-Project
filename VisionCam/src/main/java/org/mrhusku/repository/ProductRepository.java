@@ -10,8 +10,9 @@ import java.util.List;
 @Repository
 public interface ProductRepository extends JpaRepository<Product, Long> {
 
-    // Această metodă caută produse din aceeași categorie care se potrivesc la lățime (+/- 15 cm marjă)
     @Query("SELECT p FROM Product p WHERE p.category = :category " +
             "AND p.width BETWEEN (:width - 15) AND (:width + 15)")
     List<Product> findSimilarProducts(@Param("category") String category, @Param("width") int width);
+
+    Product findFirstByCategoryOrderByIdAsc(String category);
 }

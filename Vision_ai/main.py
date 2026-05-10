@@ -3,11 +3,12 @@ import io
 import os
 import requests
 import uvicorn
+import datetime
 from fastapi import FastAPI, UploadFile, File, Form, Response, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 from rembg import remove, new_session
 
 app = FastAPI()
@@ -19,165 +20,221 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# config
 FORGE_API_URL = "http://127.0.0.1:7860/sdapi/v1/img2img"
 BASE_IMAGE_PATH = r"C:\Users\MrHusk\Desktop\META-PRO\VisionCam_Project\VisionCam\src\main\resources\static"
+DESKTOP_PATH = r"C:\Users\MrHusk\Desktop"
 
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    error_str = str(exc)
-    print(f"DEBUG EROARE: {error_str}")
-    if "out of memory" in error_str.lower():
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "message": "Memorie video insuficienta. Incearca o poza mai mica."}
-        )
-    return JSONResponse(
-        status_code=500,
-        content={"status": "error", "message": f"Eroare interna: {error_str}"}
-    )
+print("Se încarcă YOLOv8 Medium...")
+model_yolo = YOLO("yolov8m.pt")
 
-print("Se incarca YOLO...")
-model_yolo = YOLO("yolov8n.pt")
-print("API-ul Dispecer este gata! Astept conexiunea cu Forge...")
 
-def encode_image_to_base64(image):
+def encode_image_to_base64(image: Image.Image) -> str:
     buffered = io.BytesIO()
     image.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
+
 def load_product_bytes(product_image_url: str) -> bytes:
     if product_image_url.startswith("http"):
-        response_img = requests.get(product_image_url)
-        return response_img.content
-    elif os.path.isabs(product_image_url):
-        full_path = os.path.normpath(product_image_url)
-    else:
-        clean_relative_path = product_image_url.lstrip('/')
-        full_path = os.path.normpath(os.path.join(BASE_IMAGE_PATH, clean_relative_path))
-
-    print(f"DEBUG: Deschid fisierul: {full_path}")
-    if not os.path.exists(full_path):
-        raise Exception(f"Fisierul nu exista: {full_path}")
+        return requests.get(product_image_url).content
+    clean_path = product_image_url.lstrip('/')
+    full_path = os.path.normpath(os.path.join(BASE_IMAGE_PATH, clean_path))
     with open(full_path, "rb") as f:
         return f.read()
 
+
 def remove_background(product_bytes: bytes) -> Image.Image:
     try:
-        cpu_session = new_session(providers=['CPUExecutionProvider'])
-        no_bg_bytes = remove(product_bytes, session=cpu_session)
-        print("DEBUG: rembg cu sesiune OK")
-    except Exception as e:
-        print(f"DEBUG: rembg sesiune fail: {e}")
+        session = new_session(providers=['CPUExecutionProvider'])
+        no_bg_bytes = remove(product_bytes, session=session)
+    except:
         no_bg_bytes = remove(product_bytes)
-        print("DEBUG: rembg fallback OK")
     return Image.open(io.BytesIO(no_bg_bytes)).convert("RGBA")
+
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...), known_width: int = 100):
     contents = await file.read()
     image = Image.open(io.BytesIO(contents))
     results = model_yolo(image)
-
+    lista_obiecte = []
+    mapping = {"couch": "Couch", "chair": "Chair", "bed": "Bed", "vase": "Vase","painting":"Painting"}
     for r in results:
         for box in r.boxes:
-            label = model_yolo.names[int(box.cls[0])]
-            if label in ["sofa", "couch", "bed"]:
+            raw_label = model_yolo.names[int(box.cls[0])]
+            if raw_label in mapping:
                 coords = box.xyxy[0].tolist()
-                xmin, ymin, xmax, ymax = coords
                 pixel_w = int(box.xywh[0][2])
                 pixel_h = int(box.xywh[0][3])
-
                 ratio_mult = (known_width * 100) // pixel_w
                 real_h = (pixel_h * ratio_mult) // 100
-
-                return {
-                    "detected_item": label.capitalize(),
-                    "x": int(xmin), "y": int(ymin),
+                lista_obiecte.append({
+                    "detected_item": mapping[raw_label],
+                    "x": int(coords[0]), "y": int(coords[1]),
                     "w_px": pixel_w, "h_px": pixel_h,
-                    "real_height_cm": real_h
-                }
-    return {"detected_item": "Unknown"}
+                    "real_height_cm": int(real_h)
+                })
+    return {"items": lista_obiecte}
+
 
 @app.post("/generate_pro")
 async def generate_pro(
         room_file: UploadFile = File(...),
         product_image_url: str = Form(...),
+        product_category: str = Form(...),
         x: int = Form(...), y: int = Form(...),
         w_px: int = Form(...), h_px: int = Form(...)
 ):
     try:
         room_bytes = await room_file.read()
         room_img = Image.open(io.BytesIO(room_bytes)).convert("RGB")
-        print(f"DEBUG: room image OK - dimensiune {room_img.size}")
+        cat_name = product_category.strip().replace(" ", "_")
 
+        # scalare
         product_bytes = load_product_bytes(product_image_url)
-        print(f"DEBUG: product_bytes lungime={len(product_bytes)}")
-
         product_no_bg = remove_background(product_bytes)
-        print(f"DEBUG: product fara fundal OK - dimensiune {product_no_bg.size}")
+        bbox = product_no_bg.getbbox()
+        if bbox: product_no_bg = product_no_bg.crop(bbox)
 
-        product_resized = product_no_bg.resize((w_px, h_px), Image.LANCZOS)
-        print(f"DEBUG: product redimensionat la {w_px}x{h_px}")
+        scale_factor = 119 if cat_name.lower() == "couch" else 104
+        orig_w, orig_h = product_no_bg.size
+        target_w = (w_px * scale_factor) // 100
+        target_h = (orig_h * target_w) // orig_w
+        product_resized = product_no_bg.resize((target_w, target_h), Image.LANCZOS)
+
+        paste_x = x - ((target_w - w_px) // 2)
+        paste_y = (y + h_px) - target_h
 
         composite = room_img.copy().convert("RGBA")
-        paste_x = max(0, min(x, room_img.width - w_px))
-        paste_y = max(0, min(y, room_img.height - h_px))
         composite.paste(product_resized, (paste_x, paste_y), product_resized)
         composite_rgb = composite.convert("RGB")
-        composite_b64 = encode_image_to_base64(composite_rgb)
-        print(f"DEBUG: composite creat OK - plasat la ({paste_x}, {paste_y})")
+        composite_rgb.save(os.path.join(DESKTOP_PATH, f"BRUT_{cat_name}.png"))
 
-        padding = 35 # extindem dimensiunile unde AI modifica
-        mask_img = Image.new("RGB", room_img.size, (0, 0, 0))
+        # masca
+        p_side, p_bottom, p_top = 30, 50, 30
+        if cat_name.lower() == "couch":
+            p_top = 80
+            p_bottom = 30
+
+        mask_img = Image.new("L", room_img.size, 0)
         draw = ImageDraw.Draw(mask_img)
         draw.rectangle([
-            max(0, paste_x - padding),
-            max(0, paste_y - padding),
-            min(room_img.width, paste_x + w_px + padding),
-            min(room_img.height, paste_y + h_px + padding)
-        ], fill=(255, 255, 255))
-        mask_b64 = encode_image_to_base64(mask_img)
-        print("DEBUG: mask creat OK")
-        composite_rgb.save("C:/Users/MrHusk/Desktop/debug_composite.png")
-        mask_img.save("C:/Users/MrHusk/Desktop/debug_mask.png")
-        print("DEBUG: composite si mask salvate!")
-        # 6. Trimite la Forge doar pentru blending realist
+            paste_x - p_side, paste_y - p_top,
+            paste_x + target_w + p_side, paste_y + target_h + p_bottom
+        ], fill=255)
+
+        # Protecție
+        alpha = product_resized.split()[3]
+        mask_img.paste(0, (paste_x, paste_y), mask=alpha)
+
+        mask_img = mask_img.filter(ImageFilter.GaussianBlur(radius=12))
+        mask_img.save(os.path.join(DESKTOP_PATH, f"MASCA_{cat_name}.png"))
+
+        product_b64 = encode_image_to_base64(product_no_bg)
+        composite_b64 = encode_image_to_base64(composite_rgb)
+        mask_b64 = encode_image_to_base64(mask_img.convert("RGB"))
+
         payload = {
             "init_images": [composite_b64],
             "mask": mask_b64,
+            "mask_blur": 10,
             "inpainting_fill": 1,
             "inpaint_full_res": True,
-            "inpaint_full_res_padding": 20,
-
-            "steps": 30, # nr de pasi de procesare
-            "cfg_scale": 7, #cat de mult respecta promptu
-            "denoising_strength": 0.45,  # 0 nu schimba nimic 1 ignora complet poza noua
-            "mask_blur": 6,  # ← blur mic la margini
-            "only_masked_padding_pixels": 20,  # ← Forge procesează DOAR zona mascată
-            "prompt": "a sofa in a living room, photorealistic, natural lighting, natural shadows, seamless integration",
-            "negative_prompt": "ugly, blurry, distorted, duplicate, extra furniture, floating",
+            "inpaint_full_res_padding": 32,
+            "prompt": (
+                f"photorealistic {product_category}, soft ambient floor shadows, "
+                "clean wall background, matching room colors, 8k, highly detailed"
+            ),
+            "negative_prompt": (
+                "pillows above, old sofa remnants, old cushions, bed, headboard, "
+                "hallucinated objects, messy wall, distorted, blurry, cartoon, "
+                "extra furniture, floating pieces, green fragments"
+            ),
+            "steps": 90,
+            "cfg_scale": 7.5,
+            "denoising_strength": 0.60,
+            "sampler_name": "DPM++ 2M Karras",
+            "alwayson_scripts": {
+                "controlnet": {
+                    "args": [
+                        {
+                            "enabled": True,
+                            "module": "ip-adapter_clip_sd15",
+                            "model": "ip-adapter_sd15",
+                            "weight": 0.85,
+                            "image": product_b64,
+                            "control_mode": 2,
+                            "pixel_perfect": True
+                        }
+                    ]
+                }
+            }
         }
 
-        print(f"DEBUG: Trimit request la Forge: {FORGE_API_URL}")
         response = requests.post(FORGE_API_URL, json=payload, timeout=300)
-        print(f"DEBUG: Forge status={response.status_code}")
-
         if response.status_code == 200:
-            result_b64 = response.json()["images"][0]
-            image_data = base64.b64decode(result_b64)
-            print("DEBUG: Imagine generata cu succes!")
+            image_data = base64.b64decode(response.json()["images"][0])
+
+            # refine
+            refined_img = Image.open(io.BytesIO(image_data)).convert("RGB")
+            refined_b64 = encode_image_to_base64(refined_img)
+
+            refine_payload = {
+                "init_images": [refined_b64],
+                "mask": mask_b64,
+                "mask_blur": 6,
+                "inpainting_fill": 1,
+                "inpaint_full_res": True,
+                "inpaint_full_res_padding": 16,
+                "prompt": (
+                    f"photorealistic {product_category}, perfect fabric texture, "
+                    "natural shadows on floor, seamless edges, 8k, ultra detailed"
+                ),
+                "negative_prompt": (
+                    "old sofa remnants, green fragments, floating pieces, blurry edges, "
+                    "artifacts, distorted, cartoon, duplicate furniture,blurry"
+                ),
+                "steps": 40,
+                "cfg_scale": 6.0,
+                "denoising_strength": 0.35,
+                "sampler_name": "DPM++ 2M Karras",
+                "alwayson_scripts": {
+                    "controlnet": {
+                        "args": [
+                            {
+                                "enabled": True,
+                                "module": "ip-adapter_clip_sd15",
+                                "model": "ip-adapter_sd15",
+                                "weight": 0.6,
+                                "image": product_b64,
+                                "control_mode": 0,
+                                "pixel_perfect": True
+                            }
+                        ]
+                    }
+                }
+            }
+
+            print("DEBUG: Trimit Pass 2 Refinement...")
+            refine_response = requests.post(FORGE_API_URL, json=refine_payload, timeout=300)
+
+            if refine_response.status_code == 200:
+                image_data = base64.b64decode(refine_response.json()["images"][0])
+                print("DEBUG: Pass 2 OK!")
+            else:
+                print("DEBUG: Pass 2 fail, returnez Pass 1")
+
+            with open(os.path.join(DESKTOP_PATH, "POZA_FINALA.png"), "wb") as f:
+                f.write(image_data)
             return Response(content=image_data, media_type="image/png")
-        else:
-            print(f"DEBUG: Forge error: {response.text[:500]}")
-            return JSONResponse(
-                status_code=500,
-                content={"status": "error", "message": "Eroare Forge: " + response.text[:200]}
-            )
+
+        return JSONResponse(status_code=500, content={"status": "error", "message": "Eroare Forge"})
 
     except Exception as e:
-        import traceback
-        print(f"DEBUG EXCEPTIE:\n{traceback.format_exc()}")
+        print(f"EROARE: {e}")
         raise
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8001)

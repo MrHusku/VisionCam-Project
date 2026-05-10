@@ -17,15 +17,15 @@ public class FurnitureController {
     @Autowired
     private FurnitureService furnitureService;
 
-    @PostMapping("/upload")
+    @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Map<String, Object> uploadFurniture(
-            @RequestParam("file") MultipartFile file,
+            @RequestPart("file") MultipartFile file,
             @RequestParam("knownWidth") int knownWidth
     ) {
         return furnitureService.processMatchAndSave(file, knownWidth);
     }
 
-    @PostMapping("/replace-pro")
+    @PostMapping(value = "/replace-pro", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<byte[]> replaceProfessional(
             @RequestParam("roomImage") MultipartFile roomImage,
             @RequestParam("productId") Long productId,
@@ -35,6 +35,16 @@ public class FurnitureController {
     ) {
         byte[] imageBytes = furnitureService.processProfessionalInpainting(
                 roomImage, productId, maskWidth, x, y);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.IMAGE_PNG);
+
+        return new ResponseEntity<>(imageBytes, headers, HttpStatus.OK);
+    }
+
+    @PostMapping(value = "/generate-multiple", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<byte[]> generateMultiple(@RequestParam("file") MultipartFile file) {
+        byte[] imageBytes = furnitureService.generareMultipla(file);
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.IMAGE_PNG);
