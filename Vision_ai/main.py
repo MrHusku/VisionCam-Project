@@ -37,7 +37,7 @@ def encode_image_to_base64(image: Image.Image) -> str:
 
 def load_product_bytes(product_image_url: str) -> bytes:
     if product_image_url.startswith("http"):
-        return requests.get(product_image_url).content
+        return requests.get(product_image_url,timeout=10).content
     clean_path = product_image_url.lstrip('/')
     full_path = os.path.normpath(os.path.join(BASE_IMAGE_PATH, clean_path))
     with open(full_path, "rb") as f:

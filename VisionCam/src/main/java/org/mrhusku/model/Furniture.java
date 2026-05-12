@@ -1,11 +1,15 @@
 package org.mrhusku.model;
 
 import jakarta.persistence.*;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.JoinColumn;
 @Entity
 @Table(name = "furniture")
 
 public class Furniture {
-
+    @ManyToOne
+    @JoinColumn(name = "user_id")
+    private User user;
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Integer id;
@@ -45,4 +49,6 @@ public class Furniture {
     public void setwPx(Integer wPx) { this.wPx = wPx; }
     public Integer gethPx() { return hPx; }
     public void sethPx(Integer hPx) { this.hPx = hPx; }
+    public User getUser() { return user; }
+    public void setUser(User user) { this.user = user; }
 }

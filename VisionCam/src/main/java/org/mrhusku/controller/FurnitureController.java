@@ -1,9 +1,13 @@
 package org.mrhusku.controller;
 
 import org.mrhusku.model.Furniture;
+import org.mrhusku.model.User;
+import org.mrhusku.repository.UserRepository;
 import org.mrhusku.service.FurnitureService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.*;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -16,13 +20,21 @@ public class FurnitureController {
 
     @Autowired
     private FurnitureService furnitureService;
+    @Autowired
+    private UserRepository userRepository;
+
+    private User getCurrentUser() {
+        String username = SecurityContextHolder.getContext().getAuthentication().getName();
+        return userRepository.findByUsername(username)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found with username: " + username));
+    }
 
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Map<String, Object> uploadFurniture(
             @RequestPart("file") MultipartFile file,
             @RequestParam("knownWidth") int knownWidth
-    ) {
-        return furnitureService.processMatchAndSave(file, knownWidth);
+    ) { User currentUser = getCurrentUser();
+        return furnitureService.processMatchAndSave(file, knownWidth,currentUser);
     }
 
     @PostMapping(value = "/replace-pro", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -54,6 +66,7 @@ public class FurnitureController {
 
     @GetMapping
     public List<Furniture> getAllFurniture() {
-        return furnitureService.getAllFurniture();
+        User currentUser = getCurrentUser();
+        return furnitureService.getFurnitureByUser(currentUser);
     }
 }
