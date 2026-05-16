@@ -18,6 +18,8 @@ import java.awt.image.BufferedImage;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.ArrayList;
+import org.springframework.data.domain.PageRequest;
 
 @Service
 public class FurnitureService {
@@ -123,8 +125,16 @@ public class FurnitureService {
             String analyzeUrl = "http://127.0.0.1:8001/analyze?known_width=" + maskWidthPx;
             HttpEntity<MultiValueMap<String, Object>> analyzeRequest = new HttpEntity<>(createBody(roomImage), createHeaders());
 
-            ResponseEntity<AiResponse> analyzeResponse = restTemplate.postForEntity(analyzeUrl, analyzeRequest, AiResponse.class);
-            AiResponse detected = analyzeResponse.getBody();
+            ResponseEntity<AiAnalysisResponse> analyzeResponse = restTemplate.postForEntity(
+                    analyzeUrl, analyzeRequest, AiAnalysisResponse.class
+            );
+            AiAnalysisResponse analyzeResult = analyzeResponse.getBody();
+
+            AiResponse detected = (analyzeResult != null
+                    && analyzeResult.getItems() != null
+                    && !analyzeResult.getItems().isEmpty())
+                    ? analyzeResult.getItems().get(0)
+                    : null;
 
             int realX = (detected != null && detected.getX() > 0) ? detected.getX() : maskX;
             int realY = (detected != null && detected.getY() > 0) ? detected.getY() : maskY;
@@ -154,12 +164,13 @@ public class FurnitureService {
         }
     }
 
-    public byte[] generareMultipla(MultipartFile originalRoomImage) {
+    public MultipleGenerationResult generareMultipla(MultipartFile originalRoomImage) {
         try {
             BufferedImage bufferedImage = ImageIO.read(originalRoomImage.getInputStream());
             int imageWidth = bufferedImage.getWidth();
 
             byte[] currentImageBytes = originalRoomImage.getBytes();
+            List<Long> usedProductIds = new ArrayList<>();
 
             AiAnalysisResponse analysis = restTemplate.postForObject(
                     "http://127.0.0.1:8001/analyze?known_width=" + imageWidth,
@@ -167,7 +178,9 @@ public class FurnitureService {
                     AiAnalysisResponse.class
             );
 
-            if (analysis == null || analysis.getItems() == null) return currentImageBytes;
+            if (analysis == null || analysis.getItems() == null) {
+                return new MultipleGenerationResult(currentImageBytes, usedProductIds);
+            }
 
             for (AiResponse detected : analysis.getItems()) {
                 String category = detected.getDetectedItem();
@@ -175,7 +188,10 @@ public class FurnitureService {
 
                 if (p == null) continue;
 
-                // Creating a custom multipart from bytes for the next step
+                if (!usedProductIds.contains(p.getId())) {
+                    usedProductIds.add(p.getId());
+                }
+
                 MultipartFile currentStepFile = new CustomMultipartFile(currentImageBytes, "room_file", "image.png");
 
                 MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
@@ -187,14 +203,26 @@ public class FurnitureService {
                 body.add("w_px", detected.getwPx());
                 body.add("h_px", detected.gethPx());
 
-                ResponseEntity<byte[]> response = restTemplate.postForEntity("http://127.0.0.1:8001/generate_pro",
-                        new HttpEntity<>(body, createHeaders()), byte[].class);
+                ResponseEntity<byte[]> response = restTemplate.postForEntity(
+                        "http://127.0.0.1:8001/generate_pro",
+                        new HttpEntity<>(body, createHeaders()),
+                        byte[].class
+                );
 
                 if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                     currentImageBytes = response.getBody();
                 }
             }
-            return currentImageBytes;
+            int needed = 6 - usedProductIds.size();
+            if (needed > 0) {
+                List<Long> excludeIds = usedProductIds.isEmpty() ? List.of(-1L) : usedProductIds;
+                List<Product> extras = productRepository.findRandomExcluding(
+                        excludeIds, PageRequest.of(0, needed)
+                );
+                extras.forEach(p -> usedProductIds.add(p.getId()));
+            }
+
+            return new MultipleGenerationResult(currentImageBytes, usedProductIds);
 
         } catch (Exception e) {
             throw new AiServiceException("Multiple generation process failed: " + e.getMessage());
@@ -214,4 +242,3 @@ public class FurnitureService {
     }
 
 }
-

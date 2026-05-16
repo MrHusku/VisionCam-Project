@@ -1,8 +1,9 @@
 package org.mrhusku.controller;
 
 import org.mrhusku.exceptions.UserAlreadyExistsException;
-import org.mrhusku.model.AuthRequest;
 import org.mrhusku.model.AuthResponse;
+import org.mrhusku.model.LoginRequest;
+import org.mrhusku.model.RegisterRequest;
 import org.mrhusku.model.User;
 import org.mrhusku.repository.UserRepository;
 import org.mrhusku.security.JwtService;
@@ -23,7 +24,9 @@ public class AuthController {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
 
-    public AuthController(AuthenticationManager authenticationManager, JwtService jwtService, UserDetailsService userDetailsService, UserRepository userRepository, PasswordEncoder passwordEncoder) {
+    public AuthController(AuthenticationManager authenticationManager, JwtService jwtService,
+                          UserDetailsService userDetailsService, UserRepository userRepository,
+                          PasswordEncoder passwordEncoder) {
         this.authenticationManager = authenticationManager;
         this.jwtService = jwtService;
         this.userDetailsService = userDetailsService;
@@ -32,25 +35,31 @@ public class AuthController {
     }
 
     @PostMapping("/register")
-    public ResponseEntity<String> registerUser(@RequestBody AuthRequest authRequest){
-        if (userRepository.existsByUsername(authRequest.getUsername())) {
-            throw new UserAlreadyExistsException(authRequest.getUsername());
+    public ResponseEntity<String> registerUser(@RequestBody RegisterRequest request) {
+        if (userRepository.existsByEmail(request.getEmail())) {
+            throw new UserAlreadyExistsException(request.getEmail());
         }
-        User user = new User();
-        user.setUsername(authRequest.getUsername());
-        user.setPassword(passwordEncoder.encode(authRequest.getPassword()));
-        userRepository.save(user);
-        return ResponseEntity.ok("User registered successfully");
 
+        User user = new User();
+        user.setUsername(request.getUsername());
+        user.setPassword(passwordEncoder.encode(request.getPassword()));
+        user.setEmail(request.getEmail());
+        userRepository.save(user);
+
+        return ResponseEntity.ok("User registered successfully");
     }
+
     @PostMapping("/login")
-    public  ResponseEntity<AuthResponse> authenticateUser(@RequestBody AuthRequest authRequest){
-        System.out.println("Am primit cerere de login pentru: " + authRequest.getUsername());
+    public ResponseEntity<AuthResponse> authenticateUser(@RequestBody LoginRequest request) {
+        System.out.println("I received a login request for: " + request.getEmail());
+
         authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(authRequest.getUsername(),authRequest.getPassword())
+                new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPassword())
         );
-        UserDetails userDetails = userDetailsService.loadUserByUsername(authRequest.getUsername());
-        String jwtToken=jwtService.generateToken(userDetails);
+
+        UserDetails userDetails = userDetailsService.loadUserByUsername(request.getEmail());
+        String jwtToken = jwtService.generateToken(userDetails);
+
         return ResponseEntity.ok(new AuthResponse(jwtToken));
     }
 }

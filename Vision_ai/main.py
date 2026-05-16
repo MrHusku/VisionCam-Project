@@ -48,7 +48,8 @@ def remove_background(product_bytes: bytes) -> Image.Image:
     try:
         session = new_session(providers=['CPUExecutionProvider'])
         no_bg_bytes = remove(product_bytes, session=session)
-    except:
+    except Exception as e:
+        print(f"rembg session failed, retrying without session: {e}")
         no_bg_bytes = remove(product_bytes)
     return Image.open(io.BytesIO(no_bg_bytes)).convert("RGBA")
 
@@ -109,7 +110,7 @@ async def generate_pro(
         composite = room_img.copy().convert("RGBA")
         composite.paste(product_resized, (paste_x, paste_y), product_resized)
         composite_rgb = composite.convert("RGB")
-        composite_rgb.save(os.path.join(DESKTOP_PATH, f"BRUT_{cat_name}.png"))
+
 
         # masca
         p_side, p_bottom, p_top = 30, 50, 30
@@ -124,12 +125,12 @@ async def generate_pro(
             paste_x + target_w + p_side, paste_y + target_h + p_bottom
         ], fill=255)
 
-        # Protecție
+        # Protectie
         alpha = product_resized.split()[3]
         mask_img.paste(0, (paste_x, paste_y), mask=alpha)
 
         mask_img = mask_img.filter(ImageFilter.GaussianBlur(radius=12))
-        mask_img.save(os.path.join(DESKTOP_PATH, f"MASCA_{cat_name}.png"))
+
 
         product_b64 = encode_image_to_base64(product_no_bg)
         composite_b64 = encode_image_to_base64(composite_rgb)
@@ -151,7 +152,7 @@ async def generate_pro(
                 "hallucinated objects, messy wall, distorted, blurry, cartoon, "
                 "extra furniture, floating pieces, green fragments"
             ),
-            "steps": 90,
+            "steps": 120,
             "cfg_scale": 7.5,
             "denoising_strength": 0.60,
             "sampler_name": "DPM++ 2M Karras",
@@ -195,10 +196,10 @@ async def generate_pro(
                     "old sofa remnants, green fragments, floating pieces, blurry edges, "
                     "artifacts, distorted, cartoon, duplicate furniture,blurry"
                 ),
-                "steps": 40,
+                "steps": 70,
                 "cfg_scale": 6.0,
-                "denoising_strength": 0.35,
-                "sampler_name": "DPM++ 2M Karras",
+                "denoising_strength": 0.3,
+                "sampler_name": "Euler a",
                 "alwayson_scripts": {
                     "controlnet": {
                         "args": [
@@ -225,8 +226,6 @@ async def generate_pro(
             else:
                 print("DEBUG: Pass 2 fail, returnez Pass 1")
 
-            with open(os.path.join(DESKTOP_PATH, "POZA_FINALA.png"), "wb") as f:
-                f.write(image_data)
             return Response(content=image_data, media_type="image/png")
 
         return JSONResponse(status_code=500, content={"status": "error", "message": "Eroare Forge"})

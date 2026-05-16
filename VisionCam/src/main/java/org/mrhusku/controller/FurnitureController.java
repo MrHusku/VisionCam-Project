@@ -10,9 +10,11 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
-
 import java.util.List;
 import java.util.Map;
+import org.mrhusku.model.MultipleGenerationResult;
+import java.util.Base64;
+import java.util.HashMap;
 
 @RestController
 @RequestMapping("/api/furniture")
@@ -24,9 +26,9 @@ public class FurnitureController {
     private UserRepository userRepository;
 
     private User getCurrentUser() {
-        String username = SecurityContextHolder.getContext().getAuthentication().getName();
-        return userRepository.findByUsername(username)
-                .orElseThrow(() -> new UsernameNotFoundException("User not found with username: " + username));
+        String email = SecurityContextHolder.getContext().getAuthentication().getName();
+        return userRepository.findByEmail(email)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found with email: " + email));
     }
 
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -55,13 +57,16 @@ public class FurnitureController {
     }
 
     @PostMapping(value = "/generate-multiple", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<byte[]> generateMultiple(@RequestParam("file") MultipartFile file) {
-        byte[] imageBytes = furnitureService.generareMultipla(file);
+    public ResponseEntity<Map<String, Object>> generateMultiple(@RequestParam("file") MultipartFile file) {
+        MultipleGenerationResult result = furnitureService.generareMultipla(file);
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.IMAGE_PNG);
+        String base64Image = Base64.getEncoder().encodeToString(result.getImage());
 
-        return new ResponseEntity<>(imageBytes, headers, HttpStatus.OK);
+        Map<String, Object> response = new HashMap<>();
+        response.put("image", base64Image);
+        response.put("productIds", result.getProductIds());
+
+        return ResponseEntity.ok(response);
     }
 
     @GetMapping
